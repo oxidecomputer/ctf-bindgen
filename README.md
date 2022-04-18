@@ -3,7 +3,7 @@
 A tool for generating Rust bindings from [ctf](https://illumos.org/man/5/ctf).
 
 The `ctf-bindgen` tool allows one to generate Rust bindings for a library that
-has been compiled with ctf information, directly from the an ELF library file.
+has been compiled with ctf information, directly from the ELF library file.
 
 ## Usage
 
