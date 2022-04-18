@@ -21,6 +21,9 @@ banner "build"
 cargo clean
 ptime -m cargo build
 ptime -m cargo build --release
+pushd tests
+./prepare.sh
+popd
 
 for x in debug release
 do
