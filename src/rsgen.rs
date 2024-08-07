@@ -22,6 +22,10 @@ pub fn emit_types(ctf_info: &ctf::Ctf) -> TokenStream {
             }
             ctf::TypeRepr::Int(_) => continue,
             ctf::TypeRepr::Float(_) => continue,
+            ctf::TypeRepr::Enum(_) => continue,
+            ctf::TypeRepr::Array { .. } => continue,
+            ctf::TypeRepr::Othertype => continue,
+            ctf::TypeRepr::Forward => continue,
         };
         tokens.extend(ts);
     }

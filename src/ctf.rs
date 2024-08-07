@@ -1,18 +1,19 @@
+use anyhow::anyhow;
+use arrayref::array_ref;
+use flate2::read::ZlibDecoder;
+use num_enum::TryFromPrimitive;
+use object::elf::FileHeader64;
+use object::endian::LittleEndian;
+use object::read::elf::ElfFile;
+use object::Object;
+use object::ObjectSection;
+use object::ObjectSymbol;
 use std::convert::TryFrom;
-use std::error::Error;
 use std::ffi::CStr;
 use std::fs;
 use std::io::Read;
 use std::mem::size_of;
 use std::path::Path;
-
-use arrayref::array_ref;
-use flate2::read::ZlibDecoder;
-use num_enum::TryFromPrimitive;
-use object::{
-    elf::FileHeader64, endian::LittleEndian, read::elf::ElfFile, Object,
-    ObjectSection, ObjectSymbol,
-};
 
 /// The primary CTF type that holds all of the information extracted from an ELF
 /// object file. This data structure contains minimally parsed CTF elements that
@@ -42,7 +43,7 @@ pub struct Ctf {
 
 impl Ctf {
     /// Create a Ctf instance from an ELF object file.
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Ctf, Box<dyn Error>> {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Ctf> {
         // parse the libname libfoo.so as foo
         let libname = path
             .as_ref()
@@ -82,7 +83,7 @@ impl Ctf {
         //
         let section = match obj_file.section_by_name(".SUNW_ctf") {
             Some(section) => section,
-            None => Err("ctf section not found")?,
+            None => Err(anyhow!("ctf section not found"))?,
         };
 
         //
@@ -97,7 +98,7 @@ impl Ctf {
         data: &[u8],
         function_names: Vec<String>,
         libname: String,
-    ) -> Result<Ctf, Box<dyn Error>> {
+    ) -> anyhow::Result<Ctf> {
         //
         // parse the preamble and header
         //
@@ -130,9 +131,7 @@ impl Ctf {
 
     /// Ensure the correct magic is in the preamble. Check the CTF is the
     /// expected version. Extract flags
-    fn parse_preamble(
-        data: &[u8],
-    ) -> Result<(Preamble, &[u8]), Box<dyn Error>> {
+    fn parse_preamble(data: &[u8]) -> anyhow::Result<(Preamble, &[u8])> {
         assert!(data.len() >= 4);
 
         //
@@ -140,7 +139,7 @@ impl Ctf {
         //
         let magic = u16::from_le_bytes([data[0], data[1]]);
         if magic != MAGIC {
-            Err(format!("ctf magic {} is not magical enough", magic))?;
+            anyhow::bail!("ctf magic {} is not magical enough", magic);
         }
 
         //
@@ -148,10 +147,10 @@ impl Ctf {
         //
         let version = data[2];
         if version != VERSION {
-            Err(format!(
+            anyhow::bail!(
                 "ctf version {} not supported, only version 2",
                 version
-            ))?;
+            );
         }
 
         //
@@ -163,7 +162,7 @@ impl Ctf {
     }
 
     /// Parse the contents of the CTF header.
-    fn parse_header(d: &[u8]) -> Result<(Header, &[u8]), Box<dyn Error>> {
+    fn parse_header(d: &[u8]) -> anyhow::Result<(Header, &[u8])> {
         let size = size_of::<Header>();
         assert!(d.len() >= size);
 
@@ -182,6 +181,10 @@ impl Ctf {
             },
             &d[size..],
         ))
+    }
+
+    pub fn is_child(&self) -> bool {
+        self.header.parent_name_offset != 0
     }
 
     pub fn string_at(&self, offset: u32) -> &str {
@@ -214,9 +217,27 @@ impl Ctf {
         cs.to_str().unwrap()
     }
 
-    pub fn type_name(&self, type_id: u16) -> &str {
-        let t = &self.sections.types[type_id as usize - 1];
-        self.string_at(t.name_offset)
+    pub fn resolve_type(&self, type_id: u16) -> Option<&Type> {
+        let true_idx = if self.is_child() {
+            // TODO: actually resolve type for parent.
+            type_id.checked_sub(0x8001)
+        } else {
+            type_id.checked_sub(1)
+        }? as usize;
+
+        self.sections.types.get(true_idx)
+    }
+
+    pub fn type_name(&self, type_id: u16) -> Option<&str> {
+        let t = self.resolve_type(type_id)?;
+        Some(self.string_at(t.name_offset))
+    }
+
+    pub fn find_type_by_name(&self, name: impl AsRef<str>) -> Option<&Type> {
+        self.sections
+            .types
+            .iter()
+            .find(|ty| self.string_at(ty.name_offset) == name.as_ref())
     }
 }
 
@@ -255,9 +276,6 @@ const VERSION: u8 = 0x02;
 /// An indicator that compression is used on the CTF data.
 const CTF_F_COMPRESS: u8 = 0x01;
 
-//XXX size of a serialized ctf_stype without the variable length section
-const BASE_TYPE_SIZE: usize = 8;
-
 /// The CTF element kinds.
 #[repr(u8)]
 #[derive(Debug, TryFromPrimitive, PartialEq)]
@@ -288,10 +306,12 @@ pub struct Label {
 
 /// A function starts with a u16 type encoding with the following format.
 ///
+/// ```text
 ///     ------------------------
 ///     | kind | isroot | vlen |
 ///     ------------------------
 ///     15   11    10    9     0
+/// ```
 ///
 /// Then, if kind indicates a typed function, the next u16 is the return type
 /// followed by N more u16 values where N is the number of arguments in the
@@ -314,8 +334,16 @@ pub struct Type {
 #[derive(Debug)]
 pub enum TypeRepr {
     Struct(Vec<StructMember>),
+    Enum(Vec<EnumMember>),
+    Array {
+        contents: u16,
+        index: u16,
+        n_elems: u32,
+    },
     Int(u32),
     Float(u32),
+    Othertype,
+    Forward,
 }
 
 #[derive(Debug)]
@@ -324,6 +352,12 @@ pub struct StructMember {
     pub type_offset: u16,
     pub offset: u16,
     pub lsize: Option<Lsize>,
+}
+
+#[derive(Debug)]
+pub struct EnumMember {
+    pub name_offset: u32,
+    pub cte_value: i32,
 }
 
 #[derive(Debug)]
@@ -364,7 +398,7 @@ impl TypeEncoding {
 
     /// Length of the associated type data.
     pub fn vlen(&self) -> u16 {
-        (self.0 & 0x3ff) as u16
+        self.0 & 0x3ff
     }
 }
 
@@ -392,7 +426,7 @@ impl Sections {
     ///     - objects
     ///     - functions
     ///     - types
-    fn parse(data: &[u8], header: &Header) -> Result<Sections, Box<dyn Error>> {
+    fn parse(data: &[u8], header: &Header) -> anyhow::Result<Sections> {
         Ok(Sections {
             labels: Self::read_labels(
                 data,
@@ -438,7 +472,7 @@ impl Sections {
         mut data: &[u8],
         begin: usize,
         end: usize,
-    ) -> Result<Vec<Function>, Box<dyn Error>> {
+    ) -> anyhow::Result<Vec<Function>> {
         //
         // restrict data slice to just the functions section
         //
@@ -472,7 +506,7 @@ impl Sections {
 
                 // Bail on unexpected kind
                 kind => {
-                    Err(format!("unexpected kind {:?}", kind))?;
+                    anyhow::bail!("unexpected kind {:?}", kind);
                 }
             }
 
@@ -494,9 +528,9 @@ impl Sections {
         mut data: &[u8],
         begin: usize,
         end: usize,
-    ) -> Result<Vec<Type>, Box<dyn Error>> {
+    ) -> anyhow::Result<Vec<Type>> {
         //
-        // restrict data slice to just the functions section
+        // restrict data slice to just the types section
         //
         data = &data[begin..end];
 
@@ -531,8 +565,11 @@ impl Sections {
 
                 //TODO account for differences in unions?
                 Kind::Struct | Kind::Union => {
-                    let (repr, remaining) =
-                        Self::parse_struct(type_encoding.vlen(), data);
+                    let (repr, remaining) = Self::parse_struct(
+                        type_encoding.vlen(),
+                        type_size,
+                        data,
+                    );
                     data = remaining;
                     result.push(Type {
                         name_offset,
@@ -575,18 +612,69 @@ impl Sections {
                 | Kind::Volatile
                 | Kind::Const
                 | Kind::Restrict => {
-                    //TODO - skip for now
-                    let len = BASE_TYPE_SIZE;
-                    data = &data[len..];
+                    result.push(Type {
+                        name_offset,
+                        type_encoding,
+                        info: TypeInfo::Type(type_size),
+                        repr: TypeRepr::Othertype,
+                        lsize: None,
+                    });
                 }
 
                 Kind::Array => {
+                    let contents = u16::from_le_bytes(*array_ref!(data, 0, 2));
+                    data = &data[2..];
+                    let index = u16::from_le_bytes(*array_ref!(data, 0, 2));
+                    data = &data[2..];
+                    let n_elems = u32::from_le_bytes(*array_ref!(data, 0, 4));
+                    data = &data[4..];
+
+                    result.push(Type {
+                        name_offset,
+                        type_encoding,
+                        info: TypeInfo::Size(type_size),
+                        repr: TypeRepr::Array {
+                            contents,
+                            index,
+                            n_elems,
+                        },
+                        lsize: None,
+                    })
+                }
+
+                Kind::Function => {
                     //TODO - skip for now
-                    let len = BASE_TYPE_SIZE + 8;
+                    let len = (4 * type_encoding.vlen()) as usize;
+
                     data = &data[len..];
                 }
 
-                k => todo!("kind: {:?}", k),
+                Kind::Enum => {
+                    let (repr, remaining) =
+                        Self::parse_enum(type_encoding.vlen(), data);
+                    data = remaining;
+                    result.push(Type {
+                        name_offset,
+                        type_encoding,
+                        info: TypeInfo::Size(type_size),
+                        repr: TypeRepr::Enum(repr),
+                        lsize: None,
+                    });
+                }
+
+                Kind::Forward => {
+                    result.push(Type {
+                        name_offset,
+                        type_encoding,
+                        info: TypeInfo::Size(type_size),
+                        repr: TypeRepr::Forward,
+                        lsize: None,
+                    });
+                }
+
+                k => {
+                    todo!("kind: {:?}", k)
+                }
             }
         }
 
@@ -595,6 +683,7 @@ impl Sections {
 
     fn parse_struct(
         member_count: u16,
+        type_size: u16,
         mut data: &[u8],
     ) -> (Vec<StructMember>, &[u8]) {
         let mut result = Vec::new();
@@ -609,7 +698,7 @@ impl Sections {
             let offset = u16::from_le_bytes(*array_ref!(data, 0, 2));
             data = &data[2..];
 
-            let lsize = if offset == 0x2000 {
+            let lsize = if type_size >= 0x2000 {
                 let lo = u32::from_le_bytes(*array_ref!(data, 0, 4));
                 data = &data[4..];
 
@@ -626,6 +715,28 @@ impl Sections {
                 type_offset,
                 offset,
                 lsize,
+            })
+        }
+
+        (result, data)
+    }
+
+    fn parse_enum(
+        member_count: u16,
+        mut data: &[u8],
+    ) -> (Vec<EnumMember>, &[u8]) {
+        let mut result = Vec::new();
+
+        for _ in 0..member_count {
+            let name_offset = u32::from_le_bytes(*array_ref!(data, 0, 4));
+            data = &data[4..];
+
+            let cte_value = i32::from_le_bytes(*array_ref!(data, 0, 4));
+            data = &data[4..];
+
+            result.push(EnumMember {
+                name_offset,
+                cte_value,
             })
         }
 
