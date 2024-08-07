@@ -1,4 +1,4 @@
-mod foo;
+// mod foo;
 
 #[test]
 fn test_foo() {

@@ -22,7 +22,7 @@ pub fn print(ctf_info: &Ctf, debug: bool) {
             String::new()
         };
         let name = &ctf_info.function_names[i];
-        println!("{} -> ({}) {}", name, args, ret,);
+        println!("{} -> ({}) {}", name, args, ret.unwrap_or("?"),);
     }
 
     println!("TYPES");
@@ -33,16 +33,20 @@ pub fn print(ctf_info: &Ctf, debug: bool) {
                 println!("struct {}:", ctf_info.string_at(t.name_offset));
 
                 for m in members {
-                    let i = m.type_offset as usize - 1;
-                    let typ = &ctf_info.sections.types[i];
-                    let sz = match typ.info {
-                        TypeInfo::Size(sz) => sz,
-                        TypeInfo::Type(_) => todo!("typeinfo type"),
-                    };
+                    let typ = &ctf_info.resolve_type(m.type_offset);
+                    let sz = typ
+                        .and_then(|t| match t.info {
+                            TypeInfo::Size(sz) => Some(sz),
+                            TypeInfo::Type(_) => None, // TODO
+                        })
+                        .map(|v| v.to_string())
+                        .unwrap_or("?".into());
                     println!(
                         "  {} {} size={} offset={}",
                         ctf_info.string_at(m.name_offset),
-                        ctf_info.string_at(typ.name_offset),
+                        ctf_info
+                            .type_name(m.type_offset)
+                            .unwrap_or("(?/parent)"),
                         sz,
                         m.offset,
                     );
@@ -50,6 +54,10 @@ pub fn print(ctf_info: &Ctf, debug: bool) {
             }
             TypeRepr::Int(_) => println!("int"),
             TypeRepr::Float(_) => println!("int"),
+            TypeRepr::Enum(_) => println!("enum"),
+            TypeRepr::Array { .. } => println!("array"),
+            TypeRepr::Othertype => println!("ptr-like"),
+            TypeRepr::Forward => println!("forward"),
         }
     }
 }
