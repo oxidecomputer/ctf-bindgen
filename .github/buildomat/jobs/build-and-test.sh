@@ -2,8 +2,8 @@
 #:
 #: name = "build-and-test"
 #: variety = "basic"
-#: target = "helios-20220404"
-#: rust_toolchain = "nightly-2021-09-03"
+#: target = "helios-2.0"
+#: rust_toolchain = true
 #: output_rules = [
 #:   "/work/debug/*",
 #:   "/work/release/*",

@@ -6,10 +6,6 @@ use std::io::Write;
 
 use clap::Parser;
 
-pub mod ctf;
-mod report;
-pub mod rsgen;
-
 #[derive(Parser, Debug)]
 #[clap(version, about, long_about = None)]
 struct Args {
@@ -28,16 +24,16 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    let ctf_info = ctf::Ctf::from_file(&args.filename)?;
+    let ctf_info = ctf_bindgen::Ctf::from_file(&args.filename)?;
 
     if !args.parse_only {
-        let code = rsgen::emit(&ctf_info);
+        let code = ctf_bindgen::rsgen::emit(&ctf_info);
         let mut file = File::create(format!("{}.rs", ctf_info.libname))?;
         file.write_all(code.as_bytes())?;
     }
 
     if args.report {
-        report::print(&ctf_info, args.debug);
+        ctf_bindgen::report::print(&ctf_info, args.debug);
     }
 
     Ok(())

@@ -306,10 +306,12 @@ pub struct Label {
 
 /// A function starts with a u16 type encoding with the following format.
 ///
+/// ```text
 ///     ------------------------
 ///     | kind | isroot | vlen |
 ///     ------------------------
 ///     15   11    10    9     0
+/// ```
 ///
 /// Then, if kind indicates a typed function, the next u16 is the return type
 /// followed by N more u16 values where N is the number of arguments in the
