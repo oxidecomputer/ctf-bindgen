@@ -1,17 +1,19 @@
 [package]
 name = "ctf-bindgen"
 version = "0.1.0"
+license = "MPL-2.0"
 edition = "2021"
 
 [features]
-default = ["emit", "report"]
+default = ["cli", "emit", "report"]
+cli = ["dep:clap"]
 emit = ["dep:prettyplease", "dep:quote", "dep:proc-macro2", "dep:syn"]
 report = []
 
 [dependencies]
 anyhow = "1"
 arrayref = "0.3"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 flate2 = "1.0"
 num_enum = "0.7"
 object = "0.36"
@@ -19,3 +21,7 @@ prettyplease = { version = "0.2", optional = true }
 proc-macro2 = { version = "1", optional = true }
 quote = { version = "1", optional = true }
 syn = { version = "2", optional = true, features = ["full"] }
+
+[[bin]]
+name = "ctf-bindgen"
+required-features = ["cli", "emit", "report"]
